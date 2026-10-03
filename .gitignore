@@ -1,0 +1,12 @@
+# Gradle
+.gradle/
+.gradle-workspace/
+build/
+
+# IDE
+.idea/
+*.iml
+local.properties
+
+# HARNESS
+run/

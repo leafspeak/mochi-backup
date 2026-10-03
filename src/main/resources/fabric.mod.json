@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "mochi",
+  "version": "${version}",
+  "name": "Mochi",
+  "description": "Advanced backup mod for Fabric — powered by Textile Backup architecture.",
+  "authors": ["LeafSpeak"],
+  "license": "MIT",
+  "icon": "assets/mochi/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["com.mochi.backup.MochiClient"],
+    "modmenu": ["com.mochi.backup.MochiModMenuIntegration"]
+  },
+  "mixins": ["mochi.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.19.0",
+    "fabric-api": "*",
+    "minecraft": ">=26.1 <=26.3"
+  }
+}
