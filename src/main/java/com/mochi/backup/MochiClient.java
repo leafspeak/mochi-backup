@@ -169,11 +169,31 @@ public class MochiClient implements ModInitializer {
 
     @SuppressWarnings("unchecked")
     private void migrateConfig() {
-        java.nio.file.Path oldConfig = FabricLoader.getInstance().getConfigDir().resolve("mochi.json");
-        if (java.nio.file.Files.exists(oldConfig)) {
+        java.nio.file.Path cfgDir = FabricLoader.getInstance().getConfigDir();
+        java.nio.file.Path json5Path = cfgDir.resolve("mochi.json5");
+        java.nio.file.Path jsonPath = cfgDir.resolve("mochi.json");
+
+        // Load from json5 using Jankson (native JSON5 support) if json doesn't exist
+        if (!java.nio.file.Files.exists(jsonPath) && java.nio.file.Files.exists(json5Path)) {
             try {
+                com.google.gson.Gson gson = new com.google.gson.GsonBuilder().create();
+                // Parse json5 as JSON object (Gson handles basic JSON5)
+                com.google.gson.JsonObject root = gson.fromJson(
+                        java.nio.file.Files.readString(json5Path), com.google.gson.JsonObject.class);
+                // Write clean JSON
+                String json = gson.toJson(root);
+                java.nio.file.Files.writeString(jsonPath, json);
+                LOGGER.info("Converted mochi.json5 -> mochi.json for AutoConfig");
+            } catch (Exception e) {
+                LOGGER.warn("Failed to convert mochi.json5", e);
+            }
+        }
+        // Always load mochi.json via Gson as fallback for any manual edits
+        if (java.nio.file.Files.exists(jsonPath)) {
+            try {
+                String content = java.nio.file.Files.readString(jsonPath);
                 com.google.gson.JsonObject root = new com.google.gson.GsonBuilder().create()
-                        .fromJson(java.nio.file.Files.readString(oldConfig), com.google.gson.JsonObject.class);
+                        .fromJson(content, com.google.gson.JsonObject.class);
                 CONFIG = new MochiConfig();
                 if (root.has("path")) CONFIG.path = root.get("path").getAsString();
                 if (root.has("backupsToKeep")) CONFIG.backupsToKeep = root.get("backupsToKeep").getAsInt();
@@ -193,13 +213,14 @@ public class MochiClient implements ModInitializer {
                 if (root.has("restoreDelay")) CONFIG.restoreDelay = root.get("restoreDelay").getAsInt();
                 if (root.has("backupBeforeRestore")) CONFIG.backupBeforeRestore = root.get("backupBeforeRestore").getAsBoolean();
                 if (root.has("deleteRestoredBackup")) CONFIG.deleteRestoredBackup = root.get("deleteRestoredBackup").getAsBoolean();
-                LOGGER.info("Migrated legacy config from mochi.json");
+                LOGGER.info("Loaded config from mochi.json, backupInterval={}", CONFIG.backupInterval);
             } catch (Exception e) {
-                LOGGER.warn("Config migration failed, using defaults", e);
+                LOGGER.warn("Failed to load config from mochi.json, using defaults", e);
                 CONFIG = new MochiConfig();
             }
         } else {
             CONFIG = new MochiConfig();
+            LOGGER.warn("No config file found (neither mochi.json nor mochi.json5), using defaults");
         }
     }
 }

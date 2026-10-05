@@ -37,7 +37,7 @@ public record ExecutableBackup(@NotNull MinecraftServer server,
     public boolean startedByPlayer() { return initiator == ActionInitiator.Player; }
 
     public void announce() {
-        String msg = "Mochi: Server backup will begin shortly. You may experience some lag.";
+        String msg = "Server backup will begin shortly. You may experience some lag.";
         if (config.get().broadcastBackupStart) {
             if (commandSource != null && commandSource.isPlayer()) {
                 log.sendInfo(commandSource, msg);
@@ -75,8 +75,9 @@ public record ExecutableBackup(@NotNull MinecraftServer server,
 
     @Override
     public Void call() throws Exception {
-        Path outFile = Utilities.getBackupRootPath(config.get(), Utilities.getLevelName(server))
+        Path outFile = Utilities.getBackupRootPath(config.get(), Utilities.getLevelName(server), server.getServerDirectory())
                 .resolve(getFileName());
+        log.info("Backup saving to: {}", outFile);
 
         log.trace("Outfile: {}", outFile);
         AtomicReference<Optional<WorldSavingState>> stateRef = new AtomicReference<>(Optional.empty());
@@ -93,6 +94,8 @@ public record ExecutableBackup(@NotNull MinecraftServer server,
                         if (save) {
                             if (commandSource != null) log.sendInfo(commandSource, "Saving server...");
                             else log.info("Saving server...");
+                            // Save BOTH chunks AND player data before backup
+                            server.getPlayerList().saveAll();
                             server.saveAllChunks(true, true, false);
                         }
                         stateRef.set(Optional.of(WorldSavingState.disable(server)));
@@ -148,7 +151,7 @@ public record ExecutableBackup(@NotNull MinecraftServer server,
 
             if (cleanup) new Cleanup(commandSource, Utilities.getLevelName(server)).call();
 
-            String doneMsg = "Mochi: Backup complete!";
+            String doneMsg = "Backup complete!";
             if (config.get().broadcastBackupDone) {
                 if (commandSource != null && commandSource.isPlayer())
                     log.sendInfo(commandSource, doneMsg);

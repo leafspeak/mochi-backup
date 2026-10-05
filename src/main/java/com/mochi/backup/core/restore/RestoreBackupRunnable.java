@@ -4,7 +4,6 @@ import com.mochi.backup.*;
 import com.mochi.backup.core.CompressionStatus;
 import com.mochi.backup.core.restore.decompressors.GenericTarDecompressor;
 import com.mochi.backup.core.restore.decompressors.ZipDecompressor;
-import com.mochi.backup.mixin.MinecraftServerSessionAccessor;
 
 import java.io.IOException;
 import java.lang.reflect.Method;
@@ -12,8 +11,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Optional;
 import java.util.concurrent.FutureTask;
-
-import com.mochi.backup.mixin.MinecraftServerSessionAccessor;
 
 public class RestoreBackupRunnable implements Runnable {
     private final static MochiLogger log = new MochiLogger(MochiClient.MOD_ID);
@@ -39,7 +36,7 @@ public class RestoreBackupRunnable implements Runnable {
             return;
         }
 
-        // === STEP 1: Decompress backup FIRST ===
+        // === STEP 1: Decompress backup ===
         long hash;
         try {
             if (ctx.restoreableFile().getArchiveFormat() == MochiConfig.ArchiveFormat.ZIP) {
@@ -69,23 +66,10 @@ public class RestoreBackupRunnable implements Runnable {
             errorMsg = Optional.empty();
         }
 
-        // === STEP 3: Save current player data (prevents crash, does NOT override backup) ===
-        // We save here to flush any pending writes, but we do NOT copy or override
-        // the backup's player data. The backup contains the correct state.
+        // === STEP 3: Halt server ===
+        log.info("Halting server...");
         try {
-            server.getPlayerList().saveAll();
-            log.info("Player data flushed.");
-        } catch (Exception e) {
-            log.warn("Could not flush player data", e);
-        }
-
-        // === STEP 4: HALT SERVER WITHOUT SAVING (like TextileBackup) ===
-        // halt(false) sets running=false immediately, skipping the slow saveAllChunks.
-        // The lighting bug only fires during chunk saving, so this avoids it entirely.
-        log.info("Halting server (no save)...");
-        try {
-            Method haltMethod = net.minecraft.server.MinecraftServer.class
-                    .getDeclaredMethod("halt", boolean.class);
+            Method haltMethod = net.minecraft.server.MinecraftServer.class.getDeclaredMethod("halt", boolean.class);
             haltMethod.setAccessible(true);
             haltMethod.invoke(server, false);
             log.info("Server halted.");
@@ -93,21 +77,16 @@ public class RestoreBackupRunnable implements Runnable {
             log.warn("Could not call halt(false)", e);
         }
 
-        // === STEP 5: Wait for server thread to finish ===
-        log.info("Waiting for server to terminate...");
+        // === STEP 4: Wait for server thread to die ===
+        log.info("Waiting for server to stop...");
         try {
-            Method getThreadMethod = net.minecraft.server.MinecraftServer.class
-                    .getDeclaredMethod("getRunningThread");
-            getThreadMethod.setAccessible(true);
-            java.lang.Thread serverThread = (java.lang.Thread) getThreadMethod.invoke(server);
-
-            FutureTask<Void> task = new FutureTask<>(() -> {
-                serverThread.join();
-                return null;
-            });
+            Method getThread = net.minecraft.server.MinecraftServer.class.getDeclaredMethod("getRunningThread");
+            getThread.setAccessible(true);
+            Thread t = (Thread) getThread.invoke(server);
+            FutureTask<Void> task = new FutureTask<>(() -> { t.join(); return null; });
             new Thread(task, "Mochi-Restore-Wait").start();
             task.get();
-            log.info("Server fully stopped.");
+            log.info("Server stopped.");
         } catch (Exception e) {
             log.warn("Could not wait for server thread", e);
             long deadline = System.currentTimeMillis() + 10_000L;
@@ -116,85 +95,39 @@ public class RestoreBackupRunnable implements Runnable {
             }
         }
 
-        // === STEP 6: Replace world files ===
-        log.info("Replacing world files...");
-        if (errorMsg.isEmpty() || !config.get().integrityVerificationMode.verify()) {
-            if (errorMsg.isEmpty()) log.info("Backup valid. Restoring...");
-            else log.info("Backup damaged but verification disabled [{}]. Proceeding.", errorMsg.get());
-
+        // === STEP 5: Replace world folder ===
+        log.info("Replacing world...");
+        try {
             try {
-                // Close level storage to release file handles
-                try {
-                    Method getSessionMethod = net.minecraft.server.MinecraftServer.class
-                            .getDeclaredMethod("getSession");
-                    getSessionMethod.setAccessible(true);
-                    Object session = getSessionMethod.invoke(server);
-                    if (session != null) {
-                        session.getClass().getMethod("close").invoke(session);
-                    }
-                } catch (Exception ignored) {}
+                Method getSession = net.minecraft.server.MinecraftServer.class.getDeclaredMethod("getSession");
+                getSession.setAccessible(true);
+                Object session = getSession.invoke(server);
+                if (session != null) {
+                    session.getClass().getMethod("close").invoke(session);
+                }
+            } catch (Exception ignored) {}
+            Utilities.deleteDirectory(worldFile);
+            Files.move(tmp, worldFile);
+        } catch (IOException e) {
+            log.error("Failed to replace world", e);
+            return;
+        }
+        log.info("World replaced.");
 
-                Utilities.deleteDirectory(worldFile);
-                Files.move(tmp, worldFile);
-            } catch (IOException e) {
-                log.error("Failed to replace world files", e);
-                return;
-            }
-            log.info("World files replaced.");
-
-            if (config.get().deleteRestoredBackup) {
-                log.info("Deleting restored backup file...");
-                try { Files.delete(ctx.restoreableFile().getFile()); } catch (IOException ignored) {}
-            }
-        } else {
-            log.warn("Backup validation warning: {}. Proceeding anyway.", errorMsg.get());
-
-            try {
-                try {
-                    Method getSessionMethod = net.minecraft.server.MinecraftServer.class
-                            .getDeclaredMethod("getSession");
-                    getSessionMethod.setAccessible(true);
-                    Object session = getSessionMethod.invoke(server);
-                    if (session != null) {
-                        session.getClass().getMethod("close").invoke(session);
-                    }
-                } catch (Exception ignored) {}
-
-                Utilities.deleteDirectory(worldFile);
-                Files.move(tmp, worldFile);
-            } catch (IOException e) {
-                log.error("Failed to replace world files", e);
-                return;
-            }
-            log.info("World files replaced (from damaged backup).");
+        if (config.get().deleteRestoredBackup) {
+            try { Files.delete(ctx.restoreableFile().getFile()); } catch (IOException ignored) {}
         }
 
-        // === STEP 7: Clean world replacement only ===
-        // The backup already contains the correct player data and spawn position.
-        // We do NOT override anything — the restored world IS the authoritative state.
-        log.info("World replaced — player data comes from backup.");
-
-        // === STEP 8: Do NOT touch client screens ===
-        // Let Minecraft's natural disconnect flow handle everything.
-        log.info("Restore complete — Minecraft will handle the rest.");
+        log.info("Restore complete.");
 
         Globals.INSTANCE.globalShutdownBackupFlag.set(true);
         Globals.INSTANCE.resetShutdownBackupTriggered();
-        Globals.INSTANCE.resetQueueExecutor();
 
-        // Discord notification
         var discordCfg = config.get();
-        if (discordCfg.discordEnabled
-                && !discordCfg.discordWebhookUrl.isBlank()
-                && discordCfg.discordSendRestore) {
+        if (discordCfg.discordEnabled && !discordCfg.discordWebhookUrl.isBlank() && discordCfg.discordSendRestore) {
             try {
-                DiscordWebhook.sendSuccess(
-                        discordCfg.discordWebhookUrl,
-                        "World Restored",
-                        "Successfully restored world from backup.\n"
-                        + "World: " + Utilities.getLevelName(server) + "\n"
-                        + "Backup: " + ctx.restoreableFile().getFile().getFileName()
-                );
+                DiscordWebhook.sendSuccess(discordCfg.discordWebhookUrl, "World Restored",
+                        "Successfully restored world from backup.\nWorld: " + Utilities.getLevelName(server));
             } catch (Exception ignored) {}
         }
 

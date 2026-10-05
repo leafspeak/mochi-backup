@@ -36,7 +36,7 @@ public class DeleteCommand {
         try { dateTime = LocalDateTime.from(Globals.defaultDateTimeFormatter.parse(fileName)); }
         catch (DateTimeParseException e) { throw CommandExceptions.DATE_TIME_PARSE_ERROR.create(e); }
 
-        Path root = Utilities.getBackupRootPath(MochiConfigHelper.INSTANCE.get(), Utilities.getLevelName(source.getServer()));
+        Path root = Utilities.getBackupRootPath(MochiConfigHelper.INSTANCE.get(), Utilities.getLevelName(source.getServer()), source.getServer().getServerDirectory());
 
         Path foundFile = RestoreableFile.applyOnFiles(root, (Path) null,
                 e -> log.sendError(source, "Error deleting file", e),

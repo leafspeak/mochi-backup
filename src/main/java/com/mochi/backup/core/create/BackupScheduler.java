@@ -3,6 +3,7 @@ package com.mochi.backup.core.create;
 import net.minecraft.server.MinecraftServer;
 import com.mochi.backup.Globals;
 import com.mochi.backup.MochiConfigHelper;
+import com.mochi.backup.MochiLogger;
 import com.mochi.backup.ActionInitiator;
 
 import java.time.Instant;
@@ -11,6 +12,7 @@ import java.time.Instant;
  * Runs backup on a preset interval via server tick events.
  */
 public class BackupScheduler {
+    private final static MochiLogger log = new MochiLogger("mochi");
     private final static MochiConfigHelper config = MochiConfigHelper.INSTANCE;
     private static boolean scheduled = false;
     private static long nextBackup = -1;
@@ -25,6 +27,10 @@ public class BackupScheduler {
             if (scheduled) {
                 if (nextBackup <= now) {
                     var executor = Globals.INSTANCE.getQueueExecutor();
+                    if (executor == null || executor.isShutdown()) {
+                        Globals.INSTANCE.resetQueueExecutor();
+                        executor = Globals.INSTANCE.getQueueExecutor();
+                    }
                     if (executor != null && !executor.isShutdown()) {
                         executor.submit(
                                 ExecutableBackup.Builder.newBackupContextBuilder()
@@ -34,12 +40,14 @@ public class BackupScheduler {
                                         .announce()
                                         .build()
                         );
+                        log.info("Timer backup submitted, next in {}s", config.get().backupInterval);
                     }
                     nextBackup = now + config.get().backupInterval;
                 }
             } else {
                 nextBackup = now + config.get().backupInterval;
                 scheduled = true;
+                log.info("Timer backup scheduled in {} seconds", config.get().backupInterval);
             }
         } else if (!config.get().doBackupsOnEmptyServer && server.getPlayerList().getPlayerCount() == 0) {
             if (scheduled && nextBackup <= now) {

@@ -25,7 +25,8 @@ public class Cleanup implements Callable<Integer> {
 
     @Override
     public Integer call() {
-        Path root = Utilities.getBackupRootPath(config.get(), worldName);
+        Path root = Utilities.getBackupRootPath(config.get(), worldName,
+                ctx != null ? ctx.getServer().getServerDirectory() : Path.of(System.getProperty("user.home")));
         int deleted = 0;
         if (!Files.isDirectory(root) || !Files.exists(root) || isEmpty(root)) return 0;
 

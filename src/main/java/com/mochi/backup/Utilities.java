@@ -48,13 +48,40 @@ public class Utilities {
         });
     }
 
-    public static Path getBackupRootPath(MochiConfig config, String worldName) {
-        Path path = Path.of(config.path).toAbsolutePath();
-        if (config.perWorldBackup) path = path.resolve(worldName);
-        if (Files.notExists(path)) {
-            try { Files.createDirectories(path); } catch (IOException e) { /* ignore */ }
+    public static Path getBackupRootPath(MochiConfig config, String worldName, Path serverDir) {
+        // Resolve backup path relative to the GAME ROOT directory,
+        // not the JVM working directory or the world save directory.
+        // Walk up from serverDir to find the game root (the dir containing "saves").
+        Path gameRoot = findGameRoot(serverDir);
+        Path basePath;
+        if (config.path.startsWith("/") || Paths.get(config.path).getRoot() != null) {
+            // Absolute path — use as-is
+            basePath = Path.of(config.path);
+        } else {
+            // Relative to game root (so "mochi_backups/" goes into the profile dir)
+            basePath = gameRoot.resolve(config.path);
         }
-        return path;
+        if (config.perWorldBackup) basePath = basePath.resolve(worldName);
+        if (Files.notExists(basePath)) {
+            try { Files.createDirectories(basePath); } catch (IOException e) { /* ignore */ }
+        }
+        return basePath;
+    }
+
+    /**
+     * Walks up from a server/world directory to find the game root directory.
+     * The game root is identified as the first parent that contains a "config" subdir.
+     * Falls back to the immediate parent of the world directory if not found.
+     */
+    private static Path findGameRoot(Path start) {
+        Path current = start.toAbsolutePath().normalize();
+        for (int i = 0; i < 10; i++) {
+            if (Files.isDirectory(current.resolve("config"))) return current;
+            current = current.getParent();
+            if (current == null) break;
+        }
+        // Fallback: parent of the world directory
+        return start.getParent();
     }
 
     public static boolean isBlacklisted(Path path, MochiConfig config) {
