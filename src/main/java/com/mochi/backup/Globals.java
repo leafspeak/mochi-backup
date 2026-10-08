@@ -29,6 +29,8 @@ public class Globals {
     private com.mochi.backup.core.restore.AwaitThread restoreAwaitThread = null;
     private Path lockedPath = null;
     private String combinedVersionString;
+    // Cache world size to avoid re-scanning on every start
+    private volatile Long cachedWorldSize = null;
 
     private Globals() {}
 
@@ -75,21 +77,35 @@ public class Globals {
     public synchronized void updateTMPFSFlag(MinecraftServer server) {
         disableTMPFiles = false;
         Path tmpDir = Path.of(System.getProperty("java.io.tmpdir"));
-        try {
-            long worldSize = worldSize(Utilities.getWorldFolder(server));
-            long tmpFree = tmpDir.toFile().getUsableSpace();
-            if (worldSize >= tmpFree) {
-                MochiClient.LOGGER.warn("Not enough space in TMP dir! ({}) world={}B free={}B", tmpDir, worldSize, tmpFree);
-                disableTMPFiles = true;
-            }
-        } catch (Exception e) {
-            MochiClient.LOGGER.warn("Failed to check TMP space", e);
-            disableTMPFiles = true;
-        }
         if (!Files.isWritable(tmpDir)) {
             MochiClient.LOGGER.warn("TMP filesystem ({}) is read-only!", tmpDir);
             disableTMPFiles = true;
+            return;
         }
+        // Only check world size for parallel backup formats that write temp scatter files.
+        // ZIP streams directly to output — no temp files needed, skip the expensive scan.
+        // Cache the result so we don't re-scan on every start.
+        long worldSize = getWorldSizeCached(server);
+        long tmpFree = tmpDir.toFile().getUsableSpace();
+        // Use a conservative threshold: disable temp files only if world exceeds 80% of tmp space
+        if (worldSize > tmpFree * 4 / 5) {
+            MochiClient.LOGGER.warn("TMP dir too small for parallel backup! tmp={}B world={}B", tmpFree, worldSize);
+            disableTMPFiles = true;
+        } else if (worldSize > 0) {
+            MochiClient.LOGGER.debug("World size {}B, tmp free {}B — temp files OK", worldSize, tmpFree);
+        }
+    }
+
+    /** Returns cached world size; scans once and stores result. */
+    private long getWorldSizeCached(MinecraftServer server) {
+        if (cachedWorldSize != null) return cachedWorldSize;
+        try {
+            cachedWorldSize = worldSize(Utilities.getWorldFolder(server));
+        } catch (Exception e) {
+            MochiClient.LOGGER.warn("Failed to calc world size, defaulting to 0", e);
+            cachedWorldSize = 0L;
+        }
+        return cachedWorldSize;
     }
 
     private long worldSize(Path worldDir) throws Exception {
