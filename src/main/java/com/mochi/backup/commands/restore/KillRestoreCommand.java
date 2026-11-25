@@ -22,6 +22,7 @@ public class KillRestoreCommand {
                     AwaitThread thread = Globals.INSTANCE.getAwaitThread().get();
                     thread.interrupt();
                     Globals.INSTANCE.globalShutdownBackupFlag.set(true);
+                    Globals.INSTANCE.setRestorePending(false);
                     Globals.INSTANCE.setLockedFile(null);
                     String who = Utilities.wasSentByPlayer(ctx.getSource()) ? "Player: " + ctx.getSource().getTextName() : "SERVER";
                     log.info("{} cancelled restore.", who);

@@ -1,6 +1,5 @@
 package com.mochi.backup.core.create.compressors;
 
-import com.mochi.backup.MochiConfig;
 import com.mochi.backup.MochiConfigHelper;
 import com.mochi.backup.Utilities;
 import com.mochi.backup.core.create.ExecutableBackup;
@@ -33,43 +32,76 @@ public class ZipCompressor extends AbstractCompressor {
 
     @Override
     protected void addEntry(InputSupplier input, OutputStream arc) throws IOException {
-        try (InputStream fis = input.getInputStream()) {
-            ZipArchiveEntry entry;
-            if (input.getPath().isEmpty()) {
-                entry = new ZipArchiveEntry(input.getName());
-                byte[] buff = new byte[(int) input.size()];
-                int len = fis.read(buff);
-                Checksum sum = new CRC32();
-                sum.update(buff, 0, len);
-                entry.setCrc(sum.getValue());
-                entry.setMethod(ZipEntry.STORED);
-                entry.setSize(input.size());
-                ((ZipArchiveOutputStream) arc).putArchiveEntry(entry);
-                arc.write(buff, 0, len);
-            } else {
-                Path file = input.getPath().get();
-                // Skip files that disappeared mid-backup (player disconnect cleanup, etc.)
-                try {
-                    entry = (ZipArchiveEntry) ((ZipArchiveOutputStream) arc).createArchiveEntry(file, input.getName());
-                } catch (java.nio.file.NoSuchFileException e) {
-                    return;
-                }
-                if (isDotDat(file.toString())) {
-                    long size;
-                    try { size = Files.size(file); }
-                    catch (java.nio.file.NoSuchFileException ignored) { return; }
-                    entry.setMethod(ZipEntry.STORED);
-                    entry.setSize(size);
-                    entry.setCompressedSize(size);
-                    try { entry.setCrc(getCRC(file)); }
-                    catch (java.nio.file.NoSuchFileException ignored) {}
-                } else entry.setMethod(ZipEntry.DEFLATED);
-                ((ZipArchiveOutputStream) arc).putArchiveEntry(entry);
-                try { IOUtils.copy(fis, arc); } catch (java.nio.file.NoSuchFileException ignored) {}
-                ((ZipArchiveOutputStream) arc).closeArchiveEntry();
+        ZipArchiveOutputStream zip = (ZipArchiveOutputStream) arc;
+
+        if (input.getPath().isEmpty()) {
+            // In-memory entry (the integrity status blob). STORED needs an exact CRC and size,
+            // and the payload must be read in full: a single read() need not fill the buffer.
+            byte[] data;
+            try (InputStream fis = input.getInputStream()) {
+                data = fis.readNBytes((int) input.size());
             }
-            ((ZipArchiveOutputStream) arc).closeArchiveEntry();
+            ZipArchiveEntry entry = new ZipArchiveEntry(input.getName());
+            Checksum sum = new CRC32();
+            sum.update(data, 0, data.length);
+            entry.setCrc(sum.getValue());
+            entry.setMethod(ZipEntry.STORED);
+            entry.setSize(data.length);
+            zip.putArchiveEntry(entry);
+            zip.write(data, 0, data.length);
+            zip.closeArchiveEntry();
+            return;
         }
+
+        Path file = input.getPath().get();
+
+        // Skip files that disappeared mid-backup (player disconnect cleanup, etc.)
+        ZipArchiveEntry entry;
+        try {
+            entry = (ZipArchiveEntry) zip.createArchiveEntry(file, input.getName());
+        } catch (java.nio.file.NoSuchFileException e) {
+            accountSkippedFile(input, file);
+            return;
+        }
+
+        if (isDotDat(file.toString())) {
+            long size;
+            try {
+                size = Files.size(file);
+            } catch (java.nio.file.NoSuchFileException e) {
+                accountSkippedFile(input, file);
+                return;
+            }
+            entry.setMethod(ZipEntry.STORED);
+            entry.setSize(size);
+            entry.setCompressedSize(size);
+            try {
+                entry.setCrc(getCRC(file));
+            } catch (java.nio.file.NoSuchFileException e) {
+                accountSkippedFile(input, file);
+                return;
+            }
+        } else {
+            entry.setMethod(ZipEntry.DEFLATED);
+        }
+
+        zip.putArchiveEntry(entry);
+        try (InputStream fis = input.getInputStream()) {
+            try {
+                IOUtils.copy(fis, arc);
+            } catch (java.nio.file.NoSuchFileException ignored) {
+                // Vanished while reading. The entry is closed below and the stream
+                // supplier has already recorded it, so the hash stays consistent.
+            }
+        } catch (IOException e) {
+            // The stream could not be opened at all; FileInputStreamSupplier has already
+            // released the hash latch, so close the entry and let the caller decide.
+            zip.closeArchiveEntry();
+            throw e;
+        }
+        // Exactly one close per opened entry - closing twice throws
+        // "No current entry to close" and failed every sequential ZIP backup.
+        zip.closeArchiveEntry();
     }
 
     protected static boolean isDotDat(String filename) {

@@ -22,9 +22,12 @@ public class Globals {
 
     private ExecutorService executorService = null;
     public final AtomicBoolean globalShutdownBackupFlag = new AtomicBoolean(true);
+    /** True while a backup is actually executing on the queue executor. */
+    private final AtomicBoolean backupRunning = new AtomicBoolean(false);
+    /** True from the moment a restore is requested until it finishes or is cancelled. */
+    private final AtomicBoolean restorePending = new AtomicBoolean(false);
     // Prevents triggering the shutdown-backup task multiple ticks in a row as the server winds down.
     private volatile boolean shutdownBackupTriggered = false;
-    public boolean disableWatchdog = false;
     private boolean disableTMPFiles = false;
     private com.mochi.backup.core.restore.AwaitThread restoreAwaitThread = null;
     private Path lockedPath = null;
@@ -41,16 +44,28 @@ public class Globals {
         executorService = Executors.newSingleThreadExecutor();
     }
 
-    public void shutdownQueueExecutor(long timeout) {
-        if (executorService.isShutdown()) return;
-        executorService.shutdown();
-        try {
-            if (!executorService.awaitTermination(timeout, TimeUnit.MICROSECONDS)) {
-                executorService.shutdownNow();
+    public boolean isBackupRunning() { return backupRunning.get(); }
+    public void setBackupRunning(boolean running) { backupRunning.set(running); }
+
+    public boolean isRestorePending() { return restorePending.get(); }
+    public void setRestorePending(boolean pending) { restorePending.set(pending); }
+
+    /**
+     * Waits (bounded) for a running backup to finish, so a restore never deletes or rewrites the
+     * world while a backup is still reading it. Returns false if the wait expired.
+     */
+    public boolean awaitBackupIdle(long timeout, TimeUnit unit) {
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+        while (backupRunning.get()) {
+            if (System.nanoTime() >= deadline) return false;
+            try {
+                Thread.sleep(200);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
             }
-        } catch (InterruptedException e) {
-            MochiClient.LOGGER.error("Interrupted while waiting for executor", e);
         }
+        return true;
     }
 
     // Atomic one-shot: only one caller wins; resets when a new server session starts.

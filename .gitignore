@@ -8,6 +8,6 @@ build/
 *.iml
 local.properties
 
-# HARNESS
+# Local / generated files
 run/
 modrinth-description.md

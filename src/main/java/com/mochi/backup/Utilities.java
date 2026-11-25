@@ -48,6 +48,23 @@ public class Utilities {
         });
     }
 
+    /**
+     * Resolves an archive entry name against the extraction root, rejecting anything that would
+     * escape it - relative traversal ({@code ../}), absolute paths and Windows drive paths.
+     * Without this, a crafted backup archive could write anywhere the process can write.
+     */
+    public static Path resolveArchiveEntry(Path root, String entryName) throws IOException {
+        if (entryName == null || entryName.isBlank()) {
+            throw new IOException("Archive entry has an empty name");
+        }
+        Path normalizedRoot = root.toAbsolutePath().normalize();
+        Path resolved = normalizedRoot.resolve(entryName).normalize();
+        if (!resolved.startsWith(normalizedRoot)) {
+            throw new IOException("Blocked archive entry outside the restore directory: " + entryName);
+        }
+        return resolved;
+    }
+
     public static Path getBackupRootPath(MochiConfig config, String worldName, Path serverDir) {
         // Resolve backup path relative to the GAME ROOT directory,
         // not the JVM working directory or the world save directory.
@@ -88,10 +105,23 @@ public class Utilities {
         String name = path.getFileName().toString();
         if (name.equals("session.lock")) return true;
         if (name.equals(com.mochi.backup.core.CompressionStatus.DATA_FILENAME)) return true;
+        // Normalise separators: on Windows Path.toString() uses '\', so a suffix test against
+        // "/entry" never matched and path-style blacklist entries were silently ignored.
+        String normalizedPath = path.toString().replace('\\', '/');
         for (String b : config.fileBlacklist) {
-            if (name.equals(b) || path.toString().endsWith("/" + b)) return true;
+            if (b == null || b.isBlank()) continue;
+            String entry = b.replace('\\', '/');
+            if (name.equals(entry)) return true;
+            if (normalizedPath.equals(entry)) return true;
+            if (normalizedPath.endsWith("/" + entry)) return true;
         }
         return false;
+    }
+
+    /** Compares two paths by location rather than object identity. */
+    public static boolean isSameFile(Path a, Path b) {
+        if (a == null || b == null) return false;
+        return a.toAbsolutePath().normalize().equals(b.toAbsolutePath().normalize());
     }
 
     public static DateTimeFormatter getDateTimeFormatter(MochiConfig config) {

@@ -23,6 +23,10 @@ public class StartBackupCommand {
     }
 
     private static int execute(CommandSourceStack source, @Nullable String comment) {
+        if (Globals.INSTANCE.isRestorePending()) {
+            log.sendInfo(source, "A restore is in progress; backups are paused until it finishes.");
+            return 0;
+        }
         var executor = Globals.INSTANCE.getQueueExecutor();
         if (executor == null || executor.isShutdown()) {
             log.error("Backup executor is not available (server may be shutting down).");

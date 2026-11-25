@@ -23,6 +23,7 @@ public class GenericTarDecompressor {
     public static long decompress(Path input, Path target) throws IOException {
         Instant start = Instant.now();
         FileTreeHashBuilder treeBuilder = new FileTreeHashBuilder(0);
+        Path root = target.toAbsolutePath().normalize();
 
         try (InputStream fis = Files.newInputStream(input);
              BufferedInputStream bis = new BufferedInputStream(fis);
@@ -33,10 +34,11 @@ public class GenericTarDecompressor {
             while ((entry = tar.getNextTarEntry()) != null) {
                 if (!tar.canReadEntryData(entry))
                     throw new IOException("Cannot read entry: " + entry.getName());
-                Path file = target.resolve(entry.getName());
+                // Rejects "../" traversal, absolute paths and drive paths (Tar Slip).
+                Path file = Utilities.resolveArchiveEntry(root, entry.getName());
                 if (entry.isDirectory()) {
                     Files.createDirectories(file);
-                } else {
+                } else if (!file.equals(root)) {
                     Files.createDirectories(file.getParent());
                     try (OutputStream os = Files.newOutputStream(file);
                          HashingOutputStream out = new HashingOutputStream(os, file, treeBuilder)) {
@@ -51,17 +53,32 @@ public class GenericTarDecompressor {
         catch (InterruptedException ignored) { return 0; }
     }
 
-    private static InputStream getCompressorStream(InputStream is) throws CompressorException {
+    /**
+     * Detects the compression wrapper, falling back to a raw TAR stream.
+     * The stream is marked <em>before</em> the detection attempt so it can be rewound afterwards;
+     * marking after a failed attempt would rewind to an already-consumed offset and silently
+     * corrupt the extraction.
+     */
+    private static InputStream getCompressorStream(InputStream is) throws CompressorException, IOException {
+        BufferedInputStream buffered = is instanceof BufferedInputStream b ? b : new BufferedInputStream(is);
+        buffered.mark(512);
         try {
-            return new CompressorStreamFactory().createCompressorInputStream(is);
+            return new CompressorStreamFactory().createCompressorInputStream(buffered);
         } catch (CompressorException e) {
+            try {
+                buffered.reset();
+            } catch (IOException rewindFailure) {
+                throw new CompressorException("Cannot rewind stream to test for a raw TAR archive", rewindFailure);
+            }
             byte[] header = new byte[512];
-            is.mark(header.length);
-            int sigLen;
-            try { sigLen = IOUtils.readFully(is, header); }
-            catch (IOException ex) { throw new CompressorException("Failed to read signature", ex); }
-            try { is.reset(); } catch (IOException ignored) {}
-            if (TarArchiveInputStream.matches(header, sigLen)) return is;
+            int read = 0;
+            while (read < header.length) {
+                int n = buffered.read(header, read, header.length - read);
+                if (n < 0) break;
+                read += n;
+            }
+            try { buffered.reset(); } catch (IOException ignored) {}
+            if (read > 0 && TarArchiveInputStream.matches(header, read)) return buffered;
             throw e;
         }
     }

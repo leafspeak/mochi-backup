@@ -24,8 +24,6 @@ public class MochiClient implements ModInitializer {
     public static final String MOD_ID = "mochi";
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
     public static MochiConfig CONFIG;
-    public static BackupManager BACKUP_MANAGER;
-    public static RestoreManager RESTORE_MANAGER;
 
     @Override
     public void onInitialize() {
@@ -33,9 +31,6 @@ public class MochiClient implements ModInitializer {
 
         MochiConfigHelper.updateInstance(AutoConfig.register(MochiConfig.class, JanksonConfigSerializer::new));
         CONFIG = MochiConfigHelper.INSTANCE.get();
-
-        BACKUP_MANAGER = new BackupManager(CONFIG);
-        RESTORE_MANAGER = new RestoreManager(CONFIG);
 
         Globals.INSTANCE.setCombinedVersionString(
                 FabricLoader.getInstance().getModContainer(MOD_ID).orElseThrow().getMetadata().getVersion().getFriendlyString()
@@ -131,12 +126,22 @@ public class MochiClient implements ModInitializer {
                         .requires(ctx -> {
                             try {
                                 var cfg = MochiConfigHelper.INSTANCE.get();
-                                var player = ctx.getTextName();
-                                return canPlayerRunCommand(cfg.permissionLevel, ctx)
-                                        && (!cfg.playerBlacklist.contains(player)
-                                            || (ctx.getServer().isSingleplayer() && cfg.alwaysSingleplayerAllowed))
-                                        && (cfg.playerWhitelist.isEmpty() || cfg.playerWhitelist.contains(player));
-                            } catch (Exception ignored) { return true; }
+                                boolean singleplayerOwner =
+                                        ctx.getServer() != null && ctx.getServer().isSingleplayer() && cfg.alwaysSingleplayerAllowed;
+                                // In singleplayer the owner may always use /mochi, with or without cheats.
+                                if (!singleplayerOwner && !canPlayerRunCommand(cfg.permissionLevel, ctx)) return false;
+                                // Whitelist/blacklist are player concepts: the console and command
+                                // blocks are governed by their permission level alone.
+                                if (!ctx.isPlayer()) return true;
+                                String player = ctx.getTextName();
+                                if (cfg.playerBlacklist.contains(player) && !singleplayerOwner) return false;
+                                return cfg.playerWhitelist.isEmpty() || cfg.playerWhitelist.contains(player);
+                            } catch (Exception e) {
+                                // Fail closed: a broken config must never expose /mochi restore or
+                                // /mochi delete to every player.
+                                LOGGER.warn("Could not evaluate /mochi permission, denying access", e);
+                                return false;
+                            }
                         })
                         .then(StartBackupCommand.register())
                         .then(CleanupCommand.register())
@@ -153,76 +158,52 @@ public class MochiClient implements ModInitializer {
     }
 
     private boolean canPlayerRunCommand(int level, net.minecraft.commands.CommandSourceStack source) {
-        try {
-            var perm = switch (level) {
-                case 0 -> net.minecraft.commands.Commands.LEVEL_ALL;
-                case 1 -> net.minecraft.commands.Commands.LEVEL_MODERATORS;
-                case 2 -> net.minecraft.commands.Commands.LEVEL_GAMEMASTERS;
-                case 3 -> net.minecraft.commands.Commands.LEVEL_ADMINS;
-                case 4 -> net.minecraft.commands.Commands.LEVEL_OWNERS;
-                default -> null;
-            };
-            if (perm == null) return true;
-            return perm.check(source.permissions());
-        } catch (Exception ignored) { return true; }
+        // Out-of-range values map to the most restrictive level instead of granting access.
+        int effective = (level < 0 || level > 4) ? 4 : level;
+        var perm = switch (effective) {
+            case 0 -> net.minecraft.commands.Commands.LEVEL_ALL;
+            case 1 -> net.minecraft.commands.Commands.LEVEL_MODERATORS;
+            case 2 -> net.minecraft.commands.Commands.LEVEL_GAMEMASTERS;
+            case 3 -> net.minecraft.commands.Commands.LEVEL_ADMINS;
+            default -> net.minecraft.commands.Commands.LEVEL_OWNERS;
+        };
+        return perm.check(source.permissions());
     }
 
-    @SuppressWarnings("unchecked")
+    /**
+     * Migrates a legacy {@code config/mochi.json} to {@code config/mochi.json5}.
+     * <p>
+     * AutoConfig is registered with {@code JanksonConfigSerializer}, which reads and writes
+     * {@code mochi.json5}. The old code converted in the opposite direction and then discarded
+     * the values it had parsed, so every install coming from v1/v2 silently lost its settings.
+     */
     private void migrateConfig() {
         java.nio.file.Path cfgDir = FabricLoader.getInstance().getConfigDir();
         java.nio.file.Path json5Path = cfgDir.resolve("mochi.json5");
         java.nio.file.Path jsonPath = cfgDir.resolve("mochi.json");
 
-        // Load from json5 using Jankson (native JSON5 support) if json doesn't exist
-        if (!java.nio.file.Files.exists(jsonPath) && java.nio.file.Files.exists(json5Path)) {
-            try {
-                com.google.gson.Gson gson = new com.google.gson.GsonBuilder().create();
-                // Parse json5 as JSON object (Gson handles basic JSON5)
-                com.google.gson.JsonObject root = gson.fromJson(
-                        java.nio.file.Files.readString(json5Path), com.google.gson.JsonObject.class);
-                // Write clean JSON
-                String json = gson.toJson(root);
-                java.nio.file.Files.writeString(jsonPath, json);
-                LOGGER.info("Converted mochi.json5 -> mochi.json for AutoConfig");
-            } catch (Exception e) {
-                LOGGER.warn("Failed to convert mochi.json5", e);
-            }
-        }
-        // Always load mochi.json via Gson as fallback for any manual edits
-        if (java.nio.file.Files.exists(jsonPath)) {
-            try {
-                String content = java.nio.file.Files.readString(jsonPath);
-                com.google.gson.JsonObject root = new com.google.gson.GsonBuilder().create()
-                        .fromJson(content, com.google.gson.JsonObject.class);
-                CONFIG = new MochiConfig();
-                if (root.has("path")) CONFIG.path = root.get("path").getAsString();
-                if (root.has("backupsToKeep")) CONFIG.backupsToKeep = root.get("backupsToKeep").getAsInt();
-                if (root.has("maxAge")) CONFIG.maxAge = root.get("maxAge").getAsLong();
-                if (root.has("maxSize")) CONFIG.maxSize = root.get("maxSize").getAsLong();
-                if (root.has("backupInterval")) CONFIG.backupInterval = root.get("backupInterval").getAsLong();
-                if (root.has("shutdownBackup")) CONFIG.shutdownBackup = root.get("shutdownBackup").getAsBoolean();
-                if (root.has("format")) {
-                    try { CONFIG.format = MochiConfig.ArchiveFormat.valueOf(root.get("format").getAsString().toUpperCase()); }
-                    catch (Exception ignored) {}
+        if (java.nio.file.Files.exists(json5Path) || !java.nio.file.Files.exists(jsonPath)) return;
+
+        try {
+            String content = java.nio.file.Files.readString(jsonPath);
+            com.google.gson.JsonObject legacy = com.google.gson.JsonParser.parseString(content).getAsJsonObject();
+            com.google.gson.JsonObject migrated = new com.google.gson.JsonObject();
+
+            // Keep every key that still exists on the config class.
+            for (java.lang.reflect.Field field : MochiConfig.class.getFields()) {
+                if (legacy.has(field.getName())) {
+                    migrated.add(field.getName(), legacy.get(field.getName()));
                 }
-                if (root.has("compression")) CONFIG.compression = root.get("compression").getAsInt();
-                if (root.has("fileBlacklist")) {
-                    var arr = root.get("fileBlacklist").getAsJsonArray();
-                    for (var el : arr) CONFIG.fileBlacklist.add(el.getAsString());
-                }
-                if (root.has("restoreDelay")) CONFIG.restoreDelay = root.get("restoreDelay").getAsInt();
-                if (root.has("backupBeforeRestore")) CONFIG.backupBeforeRestore = root.get("backupBeforeRestore").getAsBoolean();
-                if (root.has("deleteRestoredBackup")) CONFIG.deleteRestoredBackup = root.get("deleteRestoredBackup").getAsBoolean();
-                LOGGER.info("Loaded config from mochi.json, backupInterval={}", CONFIG.backupInterval);
-            } catch (Exception e) {
-                LOGGER.warn("Failed to load config from mochi.json, using defaults", e);
-                CONFIG = new MochiConfig();
             }
-        } else {
-            CONFIG = new MochiConfig();
-            LOGGER.warn("No config file found (neither mochi.json nor mochi.json5), using defaults");
+            // Renamed keys from older versions.
+            if (legacy.has("whitelist")) migrated.add("playerWhitelist", legacy.get("whitelist"));
+            if (legacy.has("blacklist")) migrated.add("playerBlacklist", legacy.get("blacklist"));
+
+            java.nio.file.Files.writeString(json5Path,
+                    new com.google.gson.GsonBuilder().setPrettyPrinting().create().toJson(migrated));
+            LOGGER.info("Migrated config/mochi.json -> config/mochi.json5 ({} keys)", migrated.size());
+        } catch (Exception e) {
+            LOGGER.warn("Could not migrate config/mochi.json to mochi.json5; keeping defaults", e);
         }
     }
 }
-1 0 / 1 0 / 2 0 2 6   5 : 0 6 : 2 8   P M  
- 

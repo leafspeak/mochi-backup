@@ -11,18 +11,37 @@ import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream;
 import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Locale;
 import java.util.concurrent.*;
 import java.util.zip.ZipEntry;
 
 public class ParallelZipCompressor extends ZipCompressor {
     private ParallelScatterZipCreator scatterZipCreator;
+    /**
+     * The creator does not expose its executor, so we keep our own reference and always
+     * shut it down: its workers are only stopped by writeTo(), which is skipped whenever
+     * a backup fails first - leaking threads that then keep the JVM alive.
+     */
+    private ExecutorService executorService;
 
     public static ParallelZipCompressor getInstance() { return new ParallelZipCompressor(); }
 
     @Override
     protected OutputStream createArchiveOutputStream(OutputStream stream, ExecutableBackup ctx, int coreLimit) {
-        scatterZipCreator = new ParallelScatterZipCreator(Executors.newFixedThreadPool(coreLimit));
+        executorService = Executors.newFixedThreadPool(coreLimit, r -> {
+            Thread t = new Thread(r, "Mochi-Zip-Worker");
+            t.setDaemon(true);
+            return t;
+        });
+        scatterZipCreator = new ParallelScatterZipCreator(executorService);
         return super.createArchiveOutputStream(stream, ctx, coreLimit);
+    }
+
+    @Override
+    protected void close() {
+        ExecutorService executor = executorService;
+        executorService = null;
+        if (executor != null) executor.shutdownNow();
     }
 
     @Override
@@ -38,18 +57,29 @@ public class ParallelZipCompressor extends ZipCompressor {
             try {
                 entry = (ZipArchiveEntry) ((ZipArchiveOutputStream) arc).createArchiveEntry(file, input.getName());
             } catch (java.nio.file.NoSuchFileException e) {
-                // File was deleted between listing and reading — skip it silently
+                accountSkippedFile(input, file);
                 return;
             }
             if (ZipCompressor.isDotDat(file.toString())) {
                 long size;
-                try { size = Files.size(file); }
-                catch (java.nio.file.NoSuchFileException ignored) { return; }
+                try {
+                    size = Files.size(file);
+                } catch (java.nio.file.NoSuchFileException e) {
+                    accountSkippedFile(input, file);
+                    return;
+                }
                 entry.setMethod(ZipEntry.STORED);
                 entry.setSize(size);
                 entry.setCompressedSize(size);
-                entry.setCrc(getCRC(file));
-            } else entry.setMethod(ZipEntry.DEFLATED);
+                try {
+                    entry.setCrc(getCRC(file));
+                } catch (java.nio.file.NoSuchFileException e) {
+                    accountSkippedFile(input, file);
+                    return;
+                }
+            } else {
+                entry.setMethod(ZipEntry.DEFLATED);
+            }
         }
         entry.setTime(System.currentTimeMillis());
         scatterZipCreator.addArchiveEntry(entry, input);
@@ -60,9 +90,27 @@ public class ParallelZipCompressor extends ZipCompressor {
         try {
             scatterZipCreator.writeTo((ZipArchiveOutputStream) arc);
         } catch (ExecutionException e) {
-            Throwable cause = e.getCause();
-            MochiClient.LOGGER.error("Parallel ZIP write failed (possible out of space)", cause);
-            throw new NoSpaceLeftOnDeviceException(cause != null ? cause : e);
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            // Only report "out of space" when that is actually what happened; a file that
+            // vanished must not be blamed on the disk.
+            if (isOutOfSpace(cause)) {
+                MochiClient.LOGGER.error("Parallel ZIP write failed: no space left on device", cause);
+                throw new NoSpaceLeftOnDeviceException(cause);
+            }
+            MochiClient.LOGGER.error("Parallel ZIP write failed", cause);
+            throw e;
         }
+    }
+
+    private static boolean isOutOfSpace(Throwable t) {
+        for (Throwable c = t; c != null; c = c.getCause()) {
+            String message = c.getMessage();
+            if (message != null && message.toLowerCase(Locale.ROOT).contains("space")) return true;
+            if (c instanceof java.nio.file.FileSystemException fse) {
+                String reason = fse.getReason();
+                if (reason != null && reason.toLowerCase(Locale.ROOT).contains("space")) return true;
+            }
+        }
+        return false;
     }
 }

@@ -2,7 +2,7 @@ package com.mochi.backup.core.restore;
 
 import com.mochi.backup.*;
 import com.mochi.backup.core.RestoreableFile;
-import com.mochi.backup.core.create.ExecutableBackup;
+
 import net.minecraft.server.MinecraftServer;
 
 import java.nio.file.Path;
@@ -14,11 +14,13 @@ public class RestoreHelper {
     private final static MochiLogger log = new MochiLogger(MochiClient.MOD_ID);
     private final static MochiConfigHelper config = MochiConfigHelper.INSTANCE;
 
-    public static Optional<RestoreableFile> findFileAndLockIfPresent(LocalDateTime backupTime, MinecraftServer server) {
+    public static Optional<RestoreableFile> findFileAndLockIfPresent(LocalDateTime backupTime, String comment, MinecraftServer server) {
         Path root = Utilities.getBackupRootPath(config.get(), Utilities.getLevelName(server), server.getServerDirectory());
         Optional<RestoreableFile> result = RestoreableFile.applyOnFiles(root, Optional.empty(),
                 e -> log.error("Error locking file", e),
-                s -> s.filter(rf -> rf.getCreationTime().equals(backupTime)).findFirst());
+                s -> s.filter(rf -> rf.getCreationTime().equals(backupTime))
+                        .filter(rf -> comment == null || rf.getComment().map(comment::equals).orElse(false))
+                        .findFirst());
         result.ifPresent(r -> Globals.INSTANCE.setLockedFile(r.getFile()));
         return result;
     }
@@ -37,24 +39,9 @@ public class RestoreHelper {
         else
             log.info("Restore initiated from Server Console");
 
-        // Safety backup before restore
-        if (config.get().backupBeforeRestore) {
-            log.info("Creating safety backup before restore...");
-            var server = ctx.server();
-            try {
-                ExecutableBackup.Builder.newBackupContextBuilder()
-                        .setServer(server)
-                        .setInitiator(ActionInitiator.Restore)
-                        .setComment("before_restore")
-                        .announce()
-                        .build()
-                        .call();
-                log.info("Safety backup created.");
-            } catch (Exception e) {
-                log.warn("Safety backup failed (continuing restore anyway): {}", e.getMessage());
-            }
-        }
-
+        // The safety backup is taken on the restore thread once the countdown expires.
+        // Doing it here would run it on the server tick thread and freeze the server for
+        // the whole compression (and for a fixed 10s save wait before that).
         Utilities.notifyPlayers(ctx.server(),
                 "Server shutting down in " + config.get().restoreDelay + " seconds for restore!");
 

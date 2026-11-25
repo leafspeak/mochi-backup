@@ -20,6 +20,9 @@ public class BackupScheduler {
     public static void tick(MinecraftServer server) {
         // Don't schedule backups while the server is shutting down
         if (!server.isRunning()) return;
+        // Never start a backup while a restore is counting down or running: the restore is about
+        // to move/delete the world folder and a backup would only read a half-removed world.
+        if (Globals.INSTANCE.isRestorePending()) return;
         if (config.get().backupInterval < 1) return;
         long now = Instant.now().getEpochSecond();
 

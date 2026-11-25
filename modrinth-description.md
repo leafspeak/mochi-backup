@@ -1,6 +1,6 @@
-# 🍡 Mochi Backup — v3.0.0
+# 🍡 Mochi Backup — v3.1.0
 
-A simple, reliable Minecraft backup mod for Fabric. Back up your world automatically on interval, manually with `/mochi backup`, or restore anytime with `/mochi restore latest`.
+A simple, reliable Minecraft backup mod for Fabric. Back up your world automatically on interval, manually with `/mochi start`, or restore anytime with `/mochi restore latest`.
 
 ## What It Does
 
@@ -14,13 +14,17 @@ A simple, reliable Minecraft backup mod for Fabric. Back up your world automatic
 
 | Command | Permission | Description |
 |---------|-----------|-------------|
-| `/mochi backup [comment]` | 4 | Create a manual backup |
+| `/mochi start [comment]` | 4 | Create a manual backup |
 | `/mochi restore latest` | 4 | Restore the most recent backup |
-| `/mochi restore <timestamp>` | 4 | Restore a specific backup by filename |
+| `/mochi restore <timestamp> [comment]` | 4 | Restore a specific backup by timestamp |
 | `/mochi list` | 4 | List all available backups |
+| `/mochi delete <timestamp>` | 4 | Delete a specific backup |
 | `/mochi cleanup` | 4 | Run cleanup (delete old backups) |
+| `/mochi killR` | 4 | Cancel a restore that is counting down |
 | `/mochi whitelist` | 4 | Manage player whitelist |
 | `/mochi blacklist` | 4 | Manage player blacklist |
+
+In singleplayer the owner can always run these commands, with or without cheats.
 
 ## In-Game Config
 
@@ -30,7 +34,7 @@ Open the config screen via **Options > Controls > Mochi Settings** (requires Mod
 |---------|---------|-------------|
 | Interval (seconds) | 3600 | Auto-backup timer. Set to 0 to disable. |
 | Restore Delay | 30 | Seconds of countdown before world replaces |
-| Backup on Shutdown | true | Create backup when server stops |
+| Backup on Shutdown | true | Create backup when the server stops (singleplayer / integrated server) |
 | Backup Before Restore | true | Safety backup before every restore |
 | Delete After Restore | true | Remove backup file after restoring |
 | Backups to Keep | 10 | Max backups per world (0 = unlimited) |
@@ -55,9 +59,10 @@ Set these in config to receive notifications:
 
 ## Compatibility
 
-- **Minecraft**: 26.3
+- **Minecraft**: 26.1 – 26.3
 - **Fabric Loader**: 0.19.5
-- **Fabric API**: 0.161.0+26.3
+- **Fabric API**: 0.160.5+26.3
+- **Cloth Config**: required
 - **Java**: 25
 - Singleplayer and multiplayer ready (server-side only, clients don't need the mod)
 
@@ -65,10 +70,11 @@ Set these in config to receive notifications:
 
 ```
 Backup:  saveAllChunks() → compress entire world folder → write to .zip
-Restore: halt(false) → wait for server → delete old world → unzip backup → rejoin
+Restore: safety backup → halt(false) → decompress to temp → integrity check
+         → rename old world aside → move new world in → verify → delete old world
 ```
 
-Uses `halt(false)` (not `stopServer()`) to avoid Minecraft's lighting bug that causes 28-second freezes. Player position and inventory are preserved exactly as they were at backup time.
+Uses `halt(false)` (not `stopServer()`) to avoid Minecraft's lighting bug that causes 28-second freezes. The old world is only deleted once the restored world has been verified, and is put back automatically if anything fails. Player position and inventory are preserved exactly as they were at backup time.
 
 ## Credits
 

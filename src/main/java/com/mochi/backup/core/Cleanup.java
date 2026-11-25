@@ -17,16 +17,17 @@ public class Cleanup implements Callable<Integer> {
 
     private final net.minecraft.commands.CommandSourceStack ctx;
     private final String worldName;
+    private final Path serverDir;
 
-    public Cleanup(net.minecraft.commands.CommandSourceStack ctx, String worldName) {
+    public Cleanup(net.minecraft.commands.CommandSourceStack ctx, String worldName, Path serverDir) {
         this.ctx = ctx;
         this.worldName = worldName;
+        this.serverDir = serverDir;
     }
 
     @Override
     public Integer call() {
-        Path root = Utilities.getBackupRootPath(config.get(), worldName,
-                ctx != null ? ctx.getServer().getServerDirectory() : Path.of(System.getProperty("user.home")));
+        Path root = Utilities.getBackupRootPath(config.get(), worldName, serverDir);
         int deleted = 0;
         if (!Files.isDirectory(root) || !Files.exists(root) || isEmpty(root)) return 0;
 
@@ -80,7 +81,7 @@ public class Cleanup implements Callable<Integer> {
     }
 
     private boolean deleteFile(Path f, net.minecraft.commands.CommandSourceStack ctx) {
-        if (Globals.INSTANCE.getLockedFile().filter(p -> p == f).isPresent()) return false;
+        if (Globals.INSTANCE.getLockedFile().filter(p -> Utilities.isSameFile(p, f)).isPresent()) return false;
         try {
             Files.delete(f);
             log.sendInfo(ctx, "Deleted: {}", f.getFileName());

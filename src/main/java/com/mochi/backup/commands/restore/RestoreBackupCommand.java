@@ -49,6 +49,10 @@ public class RestoreBackupCommand {
             log.sendInfo(source, "A restore is already in progress. Use /mochi killR to cancel.");
             return -1;
         }
+        if (Globals.INSTANCE.isBackupRunning()) {
+            log.sendInfo(source, "A backup is still running. Wait for it to finish, then restore.");
+            return -1;
+        }
 
         LocalDateTime dateTime;
         Optional<RestoreableFile> backupFile;
@@ -59,7 +63,7 @@ public class RestoreBackupCommand {
         } else {
             try { dateTime = LocalDateTime.from(Globals.defaultDateTimeFormatter.parse(file)); }
             catch (DateTimeParseException e) { throw CommandExceptions.DATE_TIME_PARSE_ERROR.create(e); }
-            backupFile = RestoreHelper.findFileAndLockIfPresent(dateTime, source.getServer());
+            backupFile = RestoreHelper.findFileAndLockIfPresent(dateTime, comment, source.getServer());
         }
 
         if (backupFile.isEmpty()) {
@@ -72,14 +76,20 @@ public class RestoreBackupCommand {
         // killed by the restore, so any save+quit would fail silently.
         Globals.INSTANCE.globalShutdownBackupFlag.set(false);
         Globals.INSTANCE.resetShutdownBackupTriggered();
-        Globals.INSTANCE.setAwaitThread(RestoreHelper.create(
-                RestoreContext.Builder.newRestoreContextBuilder()
-                        .setCommandSource(source)
-                        .setFile(backupFile.get())
-                        .setComment(comment)
-                        .build()
-        ));
-        Globals.INSTANCE.getAwaitThread().get().start();
+        Globals.INSTANCE.setRestorePending(true);
+        try {
+            Globals.INSTANCE.setAwaitThread(RestoreHelper.create(
+                    RestoreContext.Builder.newRestoreContextBuilder()
+                            .setCommandSource(source)
+                            .setFile(backupFile.get())
+                            .setComment(comment)
+                            .build()
+            ));
+            Globals.INSTANCE.getAwaitThread().get().start();
+        } catch (RuntimeException e) {
+            Globals.INSTANCE.setRestorePending(false);
+            throw e;
+        }
         return 1;
     }
 }

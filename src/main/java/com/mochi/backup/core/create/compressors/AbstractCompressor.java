@@ -29,6 +29,22 @@ public abstract class AbstractCompressor {
     protected void finish(OutputStream arc) throws InterruptedException, ExecutionException, IOException {}
     protected void close() {}
 
+    /**
+     * Account for a file that was skipped mid-backup (vanished between listing and reading).
+     * The hash latch must still be released, otherwise {@code getValue(true)} would wait forever
+     * for a file that will never arrive and permanently wedge the backup executor. The skip is
+     * also recorded so the integrity check reports the archive as incomplete.
+     */
+    protected final void accountSkippedFile(InputSupplier input, Path file) {
+        if (!(input instanceof FileInputStreamSupplier supplier)) return;
+        supplier.brokenFileHandler().handle(file, new java.nio.file.NoSuchFileException(file.toString()));
+        try {
+            supplier.hashTreeBuilder().update(file, 0, 0);
+        } catch (IOException e) {
+            MochiClient.LOGGER.warn("Failed to account for skipped file {}", file, e);
+        }
+    }
+
     public void createArchive(Path inputFile, Path outputFile, ExecutableBackup ctx, int coreLimit) throws IOException, ExecutionException, InterruptedException {
         Instant start = Instant.now();
         BrokenFileHandler brokenFileHandler = new BrokenFileHandler();

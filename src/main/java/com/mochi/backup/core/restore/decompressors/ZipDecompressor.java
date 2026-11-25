@@ -22,14 +22,16 @@ public class ZipDecompressor {
     public static long decompress(Path inputFile, Path target) throws IOException {
         Instant start = Instant.now();
         FileTreeHashBuilder hashBuilder = new FileTreeHashBuilder(0);
+        Path root = target.toAbsolutePath().normalize();
 
         try (ZipFile zipFile = new ZipFile(inputFile.toFile())) {
             for (Iterator<ZipArchiveEntry> it = zipFile.getEntries().asIterator(); it.hasNext();) {
                 ZipArchiveEntry entry = it.next();
-                Path file = target.resolve(entry.getName());
+                // Rejects "../" traversal, absolute paths and drive paths (Zip Slip).
+                Path file = Utilities.resolveArchiveEntry(root, entry.getName());
                 if (entry.isDirectory()) {
                     Files.createDirectories(file);
-                } else {
+                } else if (!file.equals(root)) {
                     Files.createDirectories(file.getParent());
                     try (OutputStream os = Files.newOutputStream(file);
                          HashingOutputStream out = new HashingOutputStream(os, file, hashBuilder);

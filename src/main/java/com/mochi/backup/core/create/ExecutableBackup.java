@@ -81,12 +81,13 @@ public record ExecutableBackup(@NotNull MinecraftServer server,
 
         log.trace("Outfile: {}", outFile);
         AtomicReference<Optional<WorldSavingState>> stateRef = new AtomicReference<>(Optional.empty());
+        Path ownedFile = null;
 
         try {
-            Globals.INSTANCE.disableWatchdog = true;
-
-            // Save must happen on the server tick thread; queue it and wait briefly
+            Globals.INSTANCE.setBackupRunning(true);
+            // Save must happen on the server tick thread; queue it and wait for completion
             java.util.concurrent.atomic.AtomicReference<Throwable> saveError = new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.CountDownLatch saveDone = new java.util.concurrent.CountDownLatch(1);
             boolean taskQueued = false;
             try {
                 server.executeIfPossible(() -> {
@@ -101,6 +102,8 @@ public record ExecutableBackup(@NotNull MinecraftServer server,
                         stateRef.set(Optional.of(WorldSavingState.disable(server)));
                     } catch (Throwable t) {
                         saveError.set(t);
+                    } finally {
+                        saveDone.countDown();
                     }
                 });
                 taskQueued = true;
@@ -110,16 +113,15 @@ public record ExecutableBackup(@NotNull MinecraftServer server,
                 if (commandSource != null) log.sendInfo(commandSource, "Server shutting down — skipping save phase.");
                 else log.info("Server shutting down — skipping save phase.");
             }
-            // Give the server a moment to process the queued task
+            // Wait for the queued save to actually finish instead of sleeping a fixed 10 seconds.
             if (taskQueued) {
-                for (int i = 0; i < 200 && server.isRunning(); i++) {
-                    try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+                try {
+                    if (!saveDone.await(60, java.util.concurrent.TimeUnit.SECONDS)) {
+                        log.warn("Timed out after 60s waiting for the server save to finish");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
                 }
-            }
-            // Fallback: if server is already shutdown, try direct save (may skip some chunks)
-            if (!server.isRunning() && taskQueued) {
-                try { server.saveAllChunks(true, true, false); } catch (Throwable ignored) {}
-                stateRef.set(Optional.of(WorldSavingState.disable(server)));
             }
             Throwable err = saveError.get();
             if (err != null) throw new RuntimeException("Server save failed", err);
@@ -130,7 +132,10 @@ public record ExecutableBackup(@NotNull MinecraftServer server,
 
             Path world = Utilities.getWorldFolder(server);
             Files.createDirectories(outFile.getParent());
-            Files.createFile(outFile);
+            // Never overwrite an existing backup: two backups in the same second used to collide,
+            // and the failure path then deleted the earlier, perfectly valid archive.
+            outFile = reserveUniqueFile(outFile);
+            ownedFile = outFile;
 
             int coreCount = config.get().compressionCoreCountLimit <= 0
                     ? Runtime.getRuntime().availableProcessors()
@@ -149,7 +154,7 @@ public record ExecutableBackup(@NotNull MinecraftServer server,
                 case TAR -> new AbstractTarArchiver().createArchive(world, outFile, this, coreCount);
             }
 
-            if (cleanup) new Cleanup(commandSource, Utilities.getLevelName(server)).call();
+            if (cleanup) new Cleanup(commandSource, Utilities.getLevelName(server), server.getServerDirectory()).call();
 
             String doneMsg = "Backup complete!";
             if (config.get().broadcastBackupDone) {
@@ -187,20 +192,51 @@ public record ExecutableBackup(@NotNull MinecraftServer server,
                         discordCfg.discordWebhookUrl,
                         "Backup Failed",
                         "An error occurred while creating the backup.\n```"
-                        + e.getMessage().substring(0, Math.min(e.getMessage().length(), 1024)) + "```"
+                        + describe(e) + "```"
                 );
             }
-            if (config.get().integrityVerificationMode.isStrict()) {
-                try { Files.delete(outFile); } catch (IOException ex) { log.error("Failed to delete partial backup: {}", outFile, ex); }
+            // A partial archive must never be left behind under a valid backup name, in any mode.
+            // Only delete a file that this invocation actually created.
+            if (ownedFile != null) {
+                try { Files.deleteIfExists(ownedFile); }
+                catch (IOException ex) { log.error("Failed to delete partial backup: {}", ownedFile, ex); }
             }
             if (initiator == ActionInitiator.Player && commandSource != null)
                 log.sendError(commandSource, "Backup creation failed!");
             throw e;
         } finally {
             if (stateRef.get().isPresent()) stateRef.get().get().enable(server);
-            Globals.INSTANCE.disableWatchdog = false;
+            Globals.INSTANCE.setBackupRunning(false);
         }
         return null;
+    }
+
+    /** Creates the output file, appending a counter if a backup with that name already exists. */
+    private static Path reserveUniqueFile(Path desired) throws IOException {
+        try {
+            return Files.createFile(desired);
+        } catch (java.nio.file.FileAlreadyExistsException e) {
+            String name = desired.getFileName().toString();
+            int dot = name.lastIndexOf('.');
+            String base = dot > 0 ? name.substring(0, dot) : name;
+            String extension = dot > 0 ? name.substring(dot) : "";
+            for (int i = 2; i < 1000; i++) {
+                Path candidate = desired.resolveSibling(base + "-" + i + extension);
+                try {
+                    return Files.createFile(candidate);
+                } catch (java.nio.file.FileAlreadyExistsException ignored) {
+                    // try the next index
+                }
+            }
+            throw e;
+        }
+    }
+
+    /** Null-safe, bounded description of a throwable for user-facing text. */
+    private static String describe(Throwable throwable) {
+        String message = throwable.getMessage();
+        if (message == null || message.isBlank()) message = throwable.getClass().getName();
+        return message.length() > 1024 ? message.substring(0, 1024) : message;
     }
 
     private String getFileName() {

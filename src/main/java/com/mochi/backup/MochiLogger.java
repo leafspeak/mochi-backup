@@ -54,14 +54,4 @@ public class MochiLogger {
             log(Level.ERROR, msg, args);
         }
     }
-
-    public void sendHint(CommandSourceStack source, String msg, Object... args) {
-        if (source != null && source.isPlayer()) {
-            MutableComponent text = Component.literal(
-                    messageFactory.newMessage(msg, args).getFormattedMessage());
-            source.sendSuccess(() -> text, false);
-        } else {
-            log(Level.TRACE, msg, args);
-        }
-    }
 }

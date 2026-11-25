@@ -16,10 +16,17 @@ import java.time.format.DateTimeFormatter;
  * Used for backup start/done/failed and restore events.
  */
 public class DiscordWebhook {
+    // Daemon single-thread worker: a notification must never keep the JVM alive at shutdown.
+    private static final java.util.concurrent.ExecutorService WEBHOOK_EXECUTOR =
+            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "Mochi-Webhook");
+                t.setDaemon(true);
+                return t;
+            });
+
     private static final HttpClient CLIENT = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
             .build();
-    private static final DateTimeFormatter DT_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     /**
      * Send a rich embed notification.
@@ -30,14 +37,17 @@ public class DiscordWebhook {
      */
     public static void send(String url, String title, String desc, int color) {
         if (url == null || url.isBlank()) return;
-        new Thread(() -> {
+        WEBHOOK_EXECUTOR.execute(() -> {
             try {
+                JsonObject footer = new JsonObject();
+                footer.addProperty("text", "Mochi Backup");
+
                 JsonObject embed = new JsonObject();
                 embed.addProperty("title", title);
                 embed.addProperty("description", desc);
                 embed.addProperty("color", color);
-                embed.addProperty("timestamp", LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) + "Z");
-                embed.addProperty("footer_text", "Mochi Backup");
+                embed.addProperty("timestamp", java.time.Instant.now().toString());
+                embed.add("footer", footer);
                 JsonArray arr = new JsonArray();
                 arr.add(embed);
                 JsonObject payload = new JsonObject();
@@ -54,7 +64,7 @@ public class DiscordWebhook {
             } catch (Exception e) {
                 MochiClient.LOGGER.warn("Discord webhook send failed", e);
             }
-        }, "Mochi-Webhook").start();
+        });
     }
 
     /** Convenience: green success embed */

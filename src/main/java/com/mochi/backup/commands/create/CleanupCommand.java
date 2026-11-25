@@ -14,7 +14,8 @@ public class CleanupCommand {
     public static LiteralArgumentBuilder<net.minecraft.commands.CommandSourceStack> register() {
         return Commands.literal("cleanup")
                 .executes(ctx -> {
-                    int n = new Cleanup(ctx.getSource(), Utilities.getLevelName(ctx.getSource().getServer())).call();
+                    var server = ctx.getSource().getServer();
+                    int n = new Cleanup(ctx.getSource(), Utilities.getLevelName(server), server.getServerDirectory()).call();
                     log.sendInfo(ctx.getSource(), "Cleaned {} backup(s).", n);
                     return 1;
                 });

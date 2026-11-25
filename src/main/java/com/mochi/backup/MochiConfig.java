@@ -61,16 +61,12 @@ public class MochiConfig implements ConfigData {
             extensionPieces.forEach(s -> b.append('.').append(s));
             return b.toString();
         }
-
-        public String getLastPiece() {
-            return extensionPieces.get(extensionPieces.size() - 1);
-        }
     }
 
     @Override
     public void validatePostLoad() throws ValidationException {
-        if (compressionCoreCountLimit > 0 && compressionCoreCountLimit > Runtime.getRuntime().availableProcessors())
-            throw new ValidationException("compressionCoreCountLimit exceeds available cores: " + Runtime.getRuntime().availableProcessors());
+        // compressionCoreCountLimit is clamped with Math.min() before use, so a value above the
+        // core count is harmless and must not reject an otherwise valid config.
         try { DateTimeFormatter.ofPattern(dateTimeFormat); }
         catch (IllegalArgumentException e) {
             throw new ValidationException("dateTimeFormat is invalid! See Oracle DateTimeFormatter docs.", e);

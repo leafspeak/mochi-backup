@@ -44,7 +44,7 @@ public class DeleteCommand {
                         .map(RestoreableFile::getFile).findFirst().orElse(null));
 
         if (foundFile != null) {
-            if (Globals.INSTANCE.getLockedFile().filter(p -> p == foundFile).isEmpty()) {
+            if (Globals.INSTANCE.getLockedFile().filter(p -> Utilities.isSameFile(p, foundFile)).isEmpty()) {
                 try {
                     Files.delete(foundFile);
                     log.sendInfo(source, "Deleted: {}", foundFile.getFileName());
